@@ -19,13 +19,21 @@ def safe_plot(fig):
     st.session_state.plot_counter += 1
     st.plotly_chart(fig, key=f"plot_{st.session_state.plot_counter}")
 
-# ---------------- LOAD API ---------------- #
+# ---------------- LOAD API KEY ---------------- #
 load_dotenv()
 
-llm = ChatGroq(
-    groq_api_key=os.getenv("GROQ_API_KEY"),
-    model="llama-3.3-70b-versatile"
-)
+groq_api_key = os.getenv("GROQ_API_KEY", "")
+
+with st.sidebar:
+    st.header("🔑 API Configuration")
+    api_key_input = st.text_input("Groq API Key",
+        value=groq_api_key,
+        type="password",
+        placeholder="gsk_..."
+    )
+    st.markdown("[Get your free Groq API key](https://console.groq.com/keys)", unsafe_allow_html=True)
+
+groq_api_key = api_key_input.strip()
 
 # ---------------- CLEAN CODE ---------------- #
 def clean_code(code):
@@ -35,6 +43,10 @@ def clean_code(code):
     return code.strip()
 
 # ---------------- FILE UPLOAD ---------------- #
+if not groq_api_key:
+    st.warning("⚠️ Please enter your Groq API key in the sidebar to continue.")
+    st.stop()
+
 file = st.file_uploader("Upload CSV", type=["csv"])
 
 if file:
@@ -50,11 +62,22 @@ if file:
         # reset plot counter for each question
         st.session_state.plot_counter = 0
 
+        # ---------------- INIT LLM ---------------- #
+        try:
+            llm = ChatGroq(
+                groq_api_key=groq_api_key,
+                model_name="llama-3.3-70b-versatile"
+            )
+        except Exception as e:
+            st.error(f"Failed to initialize Groq client: {e}")
+            st.stop()
+
         # ---------------- PROMPT ---------------- #
         prompt = f"""
 You are a senior data analyst.
 
 Dataset columns: {list(df.columns)}
+Dataset dtypes: {df.dtypes.to_dict()}
 
 Write Python pandas code to answer the question.
 
@@ -64,7 +87,9 @@ Rules:
 - Use plotly.express as px for charts
 - DO NOT import anything
 - If plotting:
-    - create fig
+    - create fig using px
+    - call plot(fig) to display it
+    - set result = fig
 - No print()
 - No explanation
 - No markdown
@@ -72,7 +97,12 @@ Rules:
 Question: {question}
 """
 
-        response = llm.invoke(prompt)
+        with st.spinner("🤖 Thinking..."):
+            try:
+                response = llm.invoke(prompt)
+            except Exception as e:
+                st.error(f"API Error: {e}")
+                st.stop()
 
         code = clean_code(response.content)
 
@@ -81,31 +111,30 @@ Question: {question}
 
         # ---------------- EXECUTION ---------------- #
         try:
+            import builtins
+
             local_vars = {
                 "df": df,
+                "pd": pd,
                 "px": px,
                 "plot": safe_plot
             }
 
             safe_globals = {
-                "__builtins__": {
-                    "len": len,
-                    "range": range,
-                    "min": min,
-                    "max": max,
-                    "sum": sum
-                }
+                "__builtins__": builtins.__dict__
             }
 
             exec(code, safe_globals, local_vars)
 
             # ---------------- RESULT ---------------- #
             if "result" in local_vars:
+                result = local_vars["result"]
                 st.subheader("📊 Answer")
-                st.write(local_vars["result"])
+                # Don't re-render plotly figs (already shown via plot())
+                if not hasattr(result, "to_plotly_json"):
+                    st.write(result)
             else:
                 st.warning("No result variable found.")
 
         except Exception as e:
             st.error(f"Execution Error: {e}")
-            
